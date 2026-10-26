@@ -1,0 +1,10 @@
+# Model runtime. torch itself is installed first from the CPU-only wheel index in the
+# Dockerfile (torch==2.5.1+cpu) so no CUDA wheels are downloaded; everything else is pinned here.
+sentence-transformers==3.3.1
+transformers==4.46.3
+tokenizers==0.20.3
+safetensors==0.4.5
+scipy==1.14.1
+scikit-learn==1.5.2
+pillow==11.0.0
+tqdm==4.67.1

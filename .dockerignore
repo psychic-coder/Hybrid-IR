@@ -1,0 +1,10 @@
+# Root context is not used by any image (backend/ and frontend/ have their own); kept for safety.
+**/node_modules
+**/.next
+**/__pycache__
+**/.venv
+.git
+results
+data
+.env
+.env.*

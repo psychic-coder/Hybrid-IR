@@ -1,0 +1,207 @@
+# HybridIR - `docker compose up --build` is the only command needed.
+#
+# Startup order (enforced by healthchecks):
+#   qdrant + redis (healthy) -> seed (runs once, exits 0) -> api (healthy on /ready) -> web
+#
+# Every variable has a default here, so a .env file is optional; copy .env.example to .env to
+# change anything. No host paths are used except the read-only ./loadtest mount of the
+# optional k6 service.
+
+name: hybridir
+
+x-backend-env: &backend-env
+  DATASET: ${DATASET:-scifact}
+  DATA_DIR: /data
+  RESULTS_DIR: /results
+  HF_HOME: /hf_cache
+  QDRANT_URL: http://qdrant:6333
+  REDIS_URL: redis://redis:6379/0
+  QDRANT_TIMEOUT_SECONDS: ${QDRANT_TIMEOUT_SECONDS:-10}
+  REDIS_TIMEOUT_SECONDS: ${REDIS_TIMEOUT_SECONDS:-1}
+  BEIR_BASE_URL: ${BEIR_BASE_URL:-https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets}
+  EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-small-en-v1.5}
+  RERANK_MODEL: ${RERANK_MODEL:-cross-encoder/ms-marco-MiniLM-L-6-v2}
+  EMBED_BATCH_SIZE: ${EMBED_BATCH_SIZE:-32}
+  RERANK_BATCH_SIZE: ${RERANK_BATCH_SIZE:-32}
+  RERANK_MAX_LENGTH: ${RERANK_MAX_LENGTH:-256}
+  TORCH_THREADS: ${TORCH_THREADS:-0}
+  USE_STEMMER: ${USE_STEMMER:-true}
+  USE_STOPWORDS: ${USE_STOPWORDS:-true}
+  MIN_TOKEN_LEN: ${MIN_TOKEN_LEN:-1}
+  CHUNK_SIZE: ${CHUNK_SIZE:-256}
+  CHUNK_OVERLAP: ${CHUNK_OVERLAP:-32}
+  SKIP_INTERVAL: ${SKIP_INTERVAL:-64}
+  DENSE_BACKEND: ${DENSE_BACKEND:-qdrant}
+  BM25_K1: ${BM25_K1:-1.2}
+  BM25_B: ${BM25_B:-0.75}
+  PHRASE_BOOST: ${PHRASE_BOOST:-1.0}
+  HNSW_M: ${HNSW_M:-16}
+  HNSW_EF_CONSTRUCT: ${HNSW_EF_CONSTRUCT:-100}
+  HNSW_EF: ${HNSW_EF:-64}
+  RRF_K: ${RRF_K:-60}
+  FUSION_ALPHA: ${FUSION_ALPHA:-0.5}
+  FUSION_NORM: ${FUSION_NORM:-minmax}
+  CANDIDATE_DEPTH: ${CANDIDATE_DEPTH:-100}
+  RERANK_TOP_K: ${RERANK_TOP_K:-50}
+  EVAL_DEPTH: ${EVAL_DEPTH:-100}
+  CACHE_ENABLED: ${CACHE_ENABLED:-true}
+  CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-3600}
+  ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  SEARCH_TIMEOUT_SECONDS: ${SEARCH_TIMEOUT_SECONDS:-30}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  FORCE_RESEED: ${FORCE_RESEED:-false}
+  SEED_WAIT_TIMEOUT_SECONDS: ${SEED_WAIT_TIMEOUT_SECONDS:-180}
+  EVAL_MAX_QUERIES: ${EVAL_MAX_QUERIES:-0}
+  EVAL_QPS_QUERIES: ${EVAL_QPS_QUERIES:-100}
+  EVAL_QPS_THREADS: ${EVAL_QPS_THREADS:-4}
+  EVAL_WARM_PASS: ${EVAL_WARM_PASS:-true}
+  ABLATIONS_ON_SEED: ${ABLATIONS_ON_SEED:-true}
+  ABLATION_MAX_QUERIES: ${ABLATION_MAX_QUERIES:-0}
+  ABLATION_LATENCY_SAMPLE: ${ABLATION_LATENCY_SAMPLE:-50}
+  BOOTSTRAP_RESAMPLES: ${BOOTSTRAP_RESAMPLES:-10000}
+  RANDOM_SEED: ${RANDOM_SEED:-42}
+  K6_QUERY_SAMPLE: ${K6_QUERY_SAMPLE:-200}
+  TOKENIZERS_PARALLELISM: "false"
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    healthcheck:
+      # The image ships bash but not curl: speak HTTP over /dev/tcp to the readiness endpoint.
+      test:
+        - CMD-SHELL
+        - >-
+          bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 &&
+          printf "GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
+          grep -q "200 OK" <&3'
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.1-alpine
+    command:
+      - redis-server
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-256mb}
+      - --maxmemory-policy
+      - allkeys-lru
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  seed:
+    build: ./backend
+    image: hybridir-backend:local
+    command: ["python", "-m", "scripts.seed"]
+    environment:
+      <<: *backend-env
+      HF_HUB_OFFLINE: "0"
+    volumes:
+      - index_data:/data
+      - results_data:/results
+      - hf_cache:/hf_cache
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: "no"
+
+  api:
+    build: ./backend
+    image: hybridir-backend:local
+    environment:
+      <<: *backend-env
+      # weights were downloaded into hf_cache by the seed service: never touch the network
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    volumes:
+      - index_data:/data:ro
+      - results_data:/results
+      - hf_cache:/hf_cache
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4)"]
+      interval: 10s
+      timeout: 6s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_README_URL: ${NEXT_PUBLIC_README_URL:-https://github.com/your-org/hybridir#readme}
+    image: hybridir-web:local
+    environment:
+      API_INTERNAL_URL: http://api:8000
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  k6:
+    image: grafana/k6:0.54.0
+    profiles: ["loadtest"]
+    user: "0"   # writes the summary into the results volume
+    entrypoint: ["k6"]
+    command: ["run", "/scripts/${K6_SCRIPT:-k6_search.js}"]
+    environment:
+      API_URL: http://api:8000
+      QUERIES_FILE: /results/queries.json
+      RESULTS_DIR: /results
+      K6_BM25_RATE: ${K6_BM25_RATE:-20}
+      K6_DENSE_RATE: ${K6_DENSE_RATE:-10}
+      K6_HYBRID_RATE: ${K6_HYBRID_RATE:-8}
+      K6_RERANK_RATE: ${K6_RERANK_RATE:-2}
+      K6_MIXED_RATE: ${K6_MIXED_RATE:-5}
+      K6_STAGE_SECONDS: ${K6_STAGE_SECONDS:-30}
+      K6_P95_MS: ${K6_P95_MS:-2000}
+      K6_RERANK_P95_MS: ${K6_RERANK_P95_MS:-8000}
+    volumes:
+      - ./loadtest:/scripts:ro
+      - results_data:/results
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  qdrant_data:
+  index_data:
+  results_data:
+  hf_cache:

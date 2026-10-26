@@ -1,0 +1,31 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# node
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# local data & generated results (results live in the results_data volume; `make results` exports)
+results/
+data/
+*.npy
+*.npz
+*.zip
+
+# env
+.env
+.env.*
+!.env.example
+
+# misc
+.DS_Store
+*.log
