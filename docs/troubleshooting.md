@@ -7,6 +7,7 @@ logs are JSON lines; `docker compose logs api | grep '"level": "ERROR"'` finds f
 |---|---|---|
 | `seed` exits 1 with "timed out waiting for services" | Qdrant or Redis did not become healthy within `SEED_WAIT_TIMEOUT_SECONDS` | `docker compose logs qdrant redis`; on slow disks raise the timeout in `.env` |
 | `seed` fails downloading the dataset | No outbound HTTPS to `public.ukp.informatik.tu-darmstadt.de`, or a proxy | Download `<dataset>.zip` manually and copy it into the volume: `docker compose run --rm -v "$PWD:/in" seed sh -c 'mkdir -p /data/scifact && cp /in/scifact.zip /data/scifact/'`, then `make seed` |
+| `seed` fails downloading a model with `ChunkedEncodingError` or `IncompleteRead` | The Hugging Face connection was interrupted during a large model download | Run `make seed` again; the seed job resumes cached files and retries each incomplete model download up to three times. If it still fails, allow outbound HTTPS to `huggingface.co` or download the model cache on a networked machine |
 | `seed` fails downloading models (`huggingface_hub` errors) | No access to huggingface.co | Run once with network access, or pre-populate `hf_cache` (`HF_HOME` layout) from another machine |
 | `api` restarts or is never healthy | `/ready` failing; see which check | `curl -s localhost:8000/ready | python -m json.tool` lists every check with a reason |
 | `/ready` says `qdrant: collection … missing or empty` | Qdrant volume was reset while `index_data` survived | `make seed` (re-upserts from `embeddings.npy`; no re-embedding) |

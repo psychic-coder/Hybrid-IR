@@ -82,8 +82,37 @@ def ensure_models(settings: Settings) -> None:
             log.info("model %s cached at %s", repo, path)
         except Exception:  # noqa: BLE001
             log.info("downloading model %s into HF_HOME (first run only)", repo)
-            path = snapshot_download(repo, ignore_patterns=ignore)
-            log.info("model %s downloaded to %s", repo, path)
+            last_error: Exception | None = None
+            for attempt in range(1, 4):
+                try:
+                    # snapshot_download resumes completed files, so retrying is safe after
+                    # interrupted connections and avoids restarting large model downloads.
+                    path = snapshot_download(
+                        repo,
+                        ignore_patterns=ignore,
+                        max_workers=1,
+                    )
+                    log.info("model %s downloaded to %s", repo, path)
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if attempt == 3:
+                        raise RuntimeError(
+                            f"unable to download model {repo} after {attempt} attempts; "
+                            "check outbound HTTPS access to huggingface.co and retry"
+                        ) from exc
+                    delay = 2**attempt
+                    log.warning(
+                        "download of model %s failed (attempt %d/3): %s; retrying in %ds",
+                        repo,
+                        attempt,
+                        exc,
+                        delay,
+                    )
+                    time.sleep(delay)
+            else:
+                # The loop either succeeds or raises on its final attempt.
+                raise RuntimeError(f"unable to download model {repo}") from last_error
 
 
 def fingerprint(settings: Settings) -> dict[str, Any]:

@@ -76,6 +76,21 @@ cp .env.example .env          # optional: every variable has a default
 docker compose up --build     # or: make up   (detached)
 ```
 
+On machines with limited Docker memory or CPU, the default seed evaluation can be
+terminated with exit code `137` while running the CPU-intensive reranker. In that case,
+use a bounded startup evaluation:
+
+```bash
+EVAL_MAX_QUERIES=5 ABLATIONS_ON_SEED=false docker compose up -d
+```
+
+Use this command when you need the web UI and API to start reliably without waiting for
+the full evaluation. It evaluates only five queries and skips optional ablation runs;
+model downloads, dataset extraction, index construction, embeddings, and the searchable
+API remain enabled. The resulting evaluation metrics are only a smoke-test sample, not
+a full benchmark. For complete evaluation results, increase or remove `EVAL_MAX_QUERIES`
+and enable ablations after ensuring Docker has at least 8 GB of available memory.
+
 | URL | What |
 |---|---|
 | <http://localhost:3000> | Web UI (Search, Compare, Explain, Metrics, Ablations, About) |
